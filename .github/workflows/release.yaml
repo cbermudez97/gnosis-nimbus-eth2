@@ -49,7 +49,7 @@ jobs:
       matrix:
         variant:
           - linux/amd64
-          - linux/arm64
+          # - linux/arm64
 
     if: always() && needs.version.result != 'failed' && (github.event_name != 'schedule' || needs.version.outputs.isNew == 'true')
     needs: version
