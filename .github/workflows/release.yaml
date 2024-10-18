@@ -5,37 +5,24 @@ on:
   #   - cron: "0 * * * *"
   workflow_dispatch:
     inputs:
-      version:
-        description: "Nimbus version to build"
+      ref:
+        description: "Nimbus repository reference to build"
         required: true
         type: string
+      tag:
+        description: "Tag to use for the release"
+        required: false
+        type: string
+      arch:
+        description: "Architecture to build for"
+        required: true
+        type: choice
+        default: "linux/amd64"
+        options:
+          - linux/amd64
+          - linux/arm64
 
 jobs:
-  version:
-    if: ${{ inputs.version == '' }}
-    runs-on: ubuntu-latest
-    outputs:
-      isNew: ${{ steps.check-new-version.outputs.isNew }}
-      version: ${{ steps.fetch-latest-release.outputs.version }}
-
-    steps:
-      - name: Fetch latest release
-        id: fetch-latest-release
-        run: |
-          VERSION=$(curl -f --retry 5 --retry-all-errors https://api.github.com/repos/status-im/nimbus-eth2/releases/latest | jq -r '.tag_name')
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-
-      - name: Check if new version
-        id: check-new-version
-        run: |
-          IS_NEW=$(docker buildx imagetools inspect ghcr.io/${{ github.repository }}:${{ steps.fetch-latest-release.outputs.version }} >/dev/null 2>&1 && echo false || echo true)
-          echo "isNew=${IS_NEW}" >> $GITHUB_OUTPUT
-
-      - name: Print information
-        run: |
-          echo "Latest release found: ${{ steps.fetch-latest-release.outputs.version }}"
-          echo "Found version is new: ${{ steps.check-new-version.outputs.isNew }}"
-
   build:
     # The binary needs to be built in the same Docker image used as base
     # in the final image in order to link the right dependencies.
@@ -45,16 +32,9 @@ jobs:
         shell: bash
 
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        variant:
-          - linux/amd64
-          # - linux/arm64
 
-    if: always() && needs.version.result != 'failed' && (github.event_name != 'schedule' || needs.version.outputs.isNew == 'true')
-    needs: version
     env:
-      VERSION: ${{ inputs.version || needs.version.outputs.version }}
+      VERSION: ${{ inputs.ref }}
 
     steps:
       - name: Install dependencies in build container
@@ -75,8 +55,8 @@ jobs:
           chown -R root: .
 
           # Configuration
-          PLATFORM=${{ fromJson('{ "linux/amd64": "Linux_amd64", "linux/arm64": "Linux_arm64v8" }')[matrix.variant] }}
-          DEPENDENCIES=${{ fromJson('{ "linux/arm64": "gcc-aarch64-linux-gnu" }')[matrix.variant] }}
+          PLATFORM=${{ fromJson('{ "linux/amd64": "Linux_amd64", "linux/arm64": "Linux_arm64v8" }')[inputs.arch] }}
+          DEPENDENCIES=${{ fromJson('{ "linux/arm64": "gcc-aarch64-linux-gnu" }')[inputs.arch] }}
 
           # Patch the upstream build script
           sed -i "s#/home/user/nimbus-eth2#$(pwd)#" ./docker/dist/entry_point.sh
@@ -92,7 +72,7 @@ jobs:
       - name: String manipulation
         id: artifact
         run: |
-          NAME=${{ matrix.variant }}
+          NAME=${{ inputs.arch }}
           echo "name=${NAME//\//-}" >> $GITHUB_OUTPUT
 
       - name: Upload binary as artifact
@@ -104,10 +84,10 @@ jobs:
   package:
     runs-on: ubuntu-latest
 
-    if: always() && needs.build.result == 'success' && (github.event_name != 'schedule' || needs.version.outputs.isNew == 'true')
-    needs: [version, build]
+    if: always() && needs.build.result == 'success'
+    needs: [build]
     env:
-      VERSION: ${{ inputs.version || needs.version.outputs.version }}
+      VERSION: ${{ inputs.tag || inputs.ref }}
 
     steps:
       - name: Checkout
@@ -146,7 +126,7 @@ jobs:
         uses: docker/build-push-action@v4
         with:
           context: .
-          platforms: linux/arm64/v8,linux/amd64
+          platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
